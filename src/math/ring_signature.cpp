@@ -22,7 +22,7 @@
 #include <map>
 #include <numeric>
 #include <vector>
-#include <secp256k1.h>
+#include <secp256k1-adapted.h>
 #include <bitcoin/system/math/ec_point.hpp>
 #include <bitcoin/system/math/ec_scalar.hpp>
 #include <bitcoin/system/math/hash.hpp>

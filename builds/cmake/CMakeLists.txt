@@ -79,15 +79,15 @@ set( pkgconfigdir "${libdir}/pkgconfig" CACHE PATH "Path to pkgconfig directory.
 
 # Implement -Dwith-tests and declare with-tests.
 #------------------------------------------------------------------------------
-set( with-tests "yes" CACHE BOOL "Compile with unit tests." )
+set( with-tests "no" CACHE BOOL "Compile with unit tests." )
 
 # Implement -Dwith-examples and declare with-examples.
 #------------------------------------------------------------------------------
-set( with-examples "yes" CACHE BOOL "Compile with examples." )
+set( with-examples "no" CACHE BOOL "Compile with examples." )
 
 # Implement -Dwith-icu and define BOOST_HAS_ICU and output ${icu}.
 #------------------------------------------------------------------------------
-set( with-icu "no" CACHE BOOL "Compile with International Components for Unicode." )
+set( with-icu "yes" CACHE BOOL "Compile with International Components for Unicode." )
 
 if (with-icu)
     add_definitions( -DBOOST_HAS_ICU )
@@ -215,7 +215,11 @@ endif()
 
 # Find secp256k1
 #------------------------------------------------------------------------------
-find_package( Secp256K1 0.0.1 REQUIRED )
+if (TARGET secp256k1)
+    set( secp256k1_STATIC_LIBRARIES secp256k1 )
+else()
+    find_package( Secp256K1 0.0.1 REQUIRED )
+endif()
 
 # Define project common includes directories
 #------------------------------------------------------------------------------
@@ -237,8 +241,8 @@ else()
         ${icu_i18n_STATIC_INCLUDE_DIRS}
         ${dl_INCLUDE_DIRS}
         ${png_STATIC_INCLUDE_DIRS}
-        ${qrencode_STATIC_INCLUDE_DIRS}
-        ${secp256k1_STATIC_INCLUDE_DIRS} )
+        ${qrencode_STATIC_INCLUDE_DIRS} )
+#       ${secp256k1_STATIC_INCLUDE_DIRS} )
 endif()
 
 # Define project common library directories
@@ -261,8 +265,8 @@ else()
         ${icu_i18n_STATIC_LIBRARY_DIRS}
         ${dl_LIBRARY_DIRS}
         ${png_STATIC_LIBRARY_DIRS}
-        ${qrencode_STATIC_LIBRARY_DIRS}
-        ${secp256k1_STATIC_LIBRARY_DIRS} )
+        ${qrencode_STATIC_LIBRARY_DIRS} )
+#       ${secp256k1_STATIC_LIBRARY_DIRS} )
 endif()
 
 # Define project common libraries/linker flags.

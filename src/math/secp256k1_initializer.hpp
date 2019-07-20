@@ -20,7 +20,7 @@
 #define LIBBITCOIN_SYSTEM_SECP256K1_INITIALIZER_HPP
 
 #include <mutex>
-#include <secp256k1.h>
+#include <secp256k1-adapted.h>
 #include <bitcoin/system/define.hpp>
 
 namespace libbitcoin {

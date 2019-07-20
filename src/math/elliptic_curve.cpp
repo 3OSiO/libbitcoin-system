@@ -20,8 +20,7 @@
 
 #include <algorithm>
 #include <utility>
-#include <secp256k1.h>
-#include <secp256k1_recovery.h>
+#include <secp256k1-adapted.h>
 #include <boost/ptr_container/ptr_vector.hpp>
 #include <bitcoin/system/math/hash.hpp>
 #include <bitcoin/system/math/limits.hpp>
@@ -42,7 +41,7 @@ static constexpr uint8_t uncompressed = 0x04;
 
 BC_CONSTFUNC int to_flags(bool compressed)
 {
-    return compressed ? SECP256K1_EC_COMPRESSED : SECP256K1_EC_UNCOMPRESSED;
+    return compressed;
 }
 
 // Helper templates
@@ -53,7 +52,7 @@ template <size_t Size>
 bool parse(const secp256k1_context* context, secp256k1_pubkey& out,
     const byte_array<Size>& point)
 {
-    return secp256k1_ec_pubkey_parse(context, &out, point.data(), Size) == 1;
+    return secp256k1_ec_pubkey_parse(context, out.data, sizeof(secp256k1_pubkey), point.data(), Size) == 1;
 }
 
 template <size_t Size>
@@ -62,7 +61,7 @@ bool serialize(const secp256k1_context* context, byte_array<Size>& out,
 {
     auto size = Size;
     const auto flags = to_flags(Size == ec_compressed_size);
-    secp256k1_ec_pubkey_serialize(context, out.data(), &size, &point, flags);
+    secp256k1_ec_pubkey_serialize(context, out.data(), (int*)&size, point.data, sizeof(secp256k1_pubkey), flags);
     return size == Size;
 }
 
@@ -72,7 +71,7 @@ bool ec_add(const secp256k1_context* context, byte_array<Size>& in_out,
 {
     secp256k1_pubkey pubkey;
     return parse(context, pubkey, in_out) &&
-        secp256k1_ec_pubkey_tweak_add(context, &pubkey, secret.data()) == 1 &&
+        secp256k1_ec_pubkey_tweak_add(context, pubkey.data, sizeof(secp256k1_pubkey), secret.data()) == 1 &&
         serialize(context, in_out, pubkey);
 }
 
@@ -82,7 +81,7 @@ bool ec_multiply(const secp256k1_context* context, byte_array<Size>& in_out,
 {
     secp256k1_pubkey pubkey;
     return parse(context, pubkey, in_out) &&
-        secp256k1_ec_pubkey_tweak_mul(context, &pubkey, secret.data()) == 1 &&
+        secp256k1_ec_pubkey_tweak_mul(context, pubkey.data, sizeof(secp256k1_pubkey), secret.data()) == 1 &&
         serialize(context, in_out, pubkey);
 }
 
@@ -91,7 +90,7 @@ bool ec_negate(const secp256k1_context* context, byte_array<Size>& in_out)
 {
     secp256k1_pubkey pubkey;
     return parse(context, pubkey, in_out) &&
-        secp256k1_ec_pubkey_negate(context, &pubkey) == 1 &&
+        secp256k1_ec_pubkey_negate(context, pubkey.data, sizeof(secp256k1_pubkey)) == 1 &&
         serialize(context, in_out, pubkey);
 }
 
@@ -100,7 +99,8 @@ bool secret_to_public(const secp256k1_context* context, byte_array<Size>& out,
     const ec_secret& secret)
 {
     secp256k1_pubkey pubkey;
-    return secp256k1_ec_pubkey_create(context, &pubkey, secret.data()) == 1 &&
+    int pubkeylen;
+    return secp256k1_ec_pubkey_create(context, pubkey.data, &pubkeylen, secret.data(), 0) == 1 &&
         serialize(context, out, pubkey);
 }
 
@@ -109,13 +109,12 @@ bool recover_public(const secp256k1_context* context, byte_array<Size>& out,
     const recoverable_signature& recoverable, const hash_digest& hash)
 {
     secp256k1_pubkey pubkey;
-    secp256k1_ecdsa_recoverable_signature sign;
+    int pubkeylen;
     const auto recovery_id = safe_to_signed<int>(recoverable.recovery_id);
     return
-        secp256k1_ecdsa_recoverable_signature_parse_compact(context,
-            &sign, recoverable.signature.data(), recovery_id) == 1 &&
-        secp256k1_ecdsa_recover(context, &pubkey, &sign, hash.data()) == 1 &&
-            serialize(context, out, pubkey);
+        secp256k1_ecdsa_recover_compact(context, hash.data(), recoverable.signature.data(),
+            pubkey.data, &pubkeylen, 0, recovery_id) == 1 &&
+        serialize(context, out, pubkey);
 }
 
 bool verify_signature(const secp256k1_context* context,
@@ -126,11 +125,12 @@ bool verify_signature(const secp256k1_context* context,
     secp256k1_ecdsa_signature parsed;
     std::copy_n(signature.begin(), ec_signature_size, std::begin(parsed.data));
 
-    // secp256k1_ecdsa_verify rejects non-normalized (low-s) signatures, but
-    // bitcoin does not have such a limitation, so we always normalize.
-    secp256k1_ecdsa_signature normal;
-    secp256k1_ecdsa_signature_normalize(context, &normal, &parsed);
-    return secp256k1_ecdsa_verify(context, &normal, hash.data(), &point) == 1;
+    // secp256k1-zkp doesn't check `high-s`
+    //// secp256k1_ecdsa_verify rejects non-normalized (low-s) signatures, but
+    //// bitcoin does not have such a limitation, so we always normalize.
+    //// secp256k1_ecdsa_signature normal;
+    //// secp256k1_ecdsa_signature_normalize(context, &normal, &parsed);
+    return secp256k1_ecdsa_verify(context, hash.data(), parsed.data, sizeof(secp256k1_ecdsa_signature), point.data, sizeof(secp256k1_pubkey)) == 1;
 }
 
 // Add and multiply EC values
@@ -199,7 +199,7 @@ bool ec_sum(ec_compressed& result, const point_list& points)
             return false;
     }
 
-    return secp256k1_ec_pubkey_combine(context, &pubkey, keys.c_array(),
+    return secp256k1_ec_pubkey_combine(context, pubkey.data, sizeof(secp256k1_pubkey), (unsigned char* const * const)keys.c_array(),
         points.size()) == 1 && serialize(context, result, pubkey);
 }
 
@@ -300,53 +300,64 @@ bool is_endorsement(const endorsement& endorsement)
 bool parse_endorsement(uint8_t& sighash_type, der_signature& der_signature,
     const endorsement& endorsement)
 {
-    if (endorsement.empty())
-        return false;
+    (void)sighash_type;
+    (void)der_signature;
+    (void)endorsement;
+    return true; // not used in EOSIO
+//  if (endorsement.empty())
+//      return false;
 
-    sighash_type = endorsement.back();
-    der_signature = { endorsement.begin(), endorsement.end() - 1 };
-    return true;
+//  sighash_type = endorsement.back();
+//  der_signature = { endorsement.begin(), endorsement.end() - 1 };
+//  return true;
 }
 
 bool parse_signature(ec_signature& out, const der_signature& der_signature,
     bool strict)
 {
-    if (der_signature.empty())
-        return false;
+    (void)out;
+    (void)der_signature;
+    (void)strict;
+    return true; // not used in EOSIO
+//  if (der_signature.empty())
+//      return false;
 
-    bool valid;
-    secp256k1_ecdsa_signature parsed;
-    const auto context = verification.context();
+//  bool valid;
+//  secp256k1_ecdsa_signature parsed;
+//  const auto context = verification.context();
 
-    if (strict)
-        valid = secp256k1_ecdsa_signature_parse_der(context, &parsed,
-            der_signature.data(), der_signature.size()) == 1;
-    else
-        valid = ecdsa_signature_parse_der_lax(context, &parsed,
-            der_signature.data(), der_signature.size()) == 1;
+//  if (strict)
+//      valid = secp256k1_ecdsa_signature_parse_der(context, &parsed,
+//          der_signature.data(), der_signature.size()) == 1;
+//  else
+//      valid = ecdsa_signature_parse_der_lax(context, &parsed,
+//          der_signature.data(), der_signature.size()) == 1;
 
-    if (valid)
-        std::copy_n(std::begin(parsed.data), ec_signature_size, out.begin());
+//  if (valid)
+//      std::copy_n(std::begin(parsed.data), ec_signature_size, out.begin());
 
-    return valid;
+//  return valid;
 }
 
 bool encode_signature(der_signature& out, const ec_signature& signature)
 {
-    // Copy to avoid exposing external types.
-    secp256k1_ecdsa_signature sign;
-    std::copy_n(signature.begin(), ec_signature_size, std::begin(sign.data));
+    (void)out;
+    (void)signature;
+    return true; // not used in EOSIO
+//  // Copy to avoid exposing external types.
+//  secp256k1_ecdsa_signature sign;
+//  std::copy_n(signature.begin(), ec_signature_size, std::begin(sign.data));
 
-    const auto context = signing.context();
-    auto size = max_der_signature_size;
-    out.resize(size);
+//  const auto context = signing.context();
+//  auto size = max_der_signature_size;
+//  out.resize(size);
 
-    if (secp256k1_ecdsa_signature_serialize_der(context, out.data(), &size,
-        &sign) != 1)
-        return false;
+//  if (secp256k1_ecdsa_signature_serialize_der(context, out.data(), &size,
+//      &sign) != 1)
+//      return false;
 
-    out.resize(size);
-    return true;
+//  out.resize(size);
+//  return true;
 }
 
 // EC sign/verify
@@ -357,8 +368,8 @@ bool sign(ec_signature& out, const ec_secret& secret, const hash_digest& hash)
     secp256k1_ecdsa_signature signature;
     const auto context = signing.context();
 
-    if (secp256k1_ecdsa_sign(context, &signature, hash.data(), secret.data(),
-        secp256k1_nonce_function_rfc6979, nullptr) != 1)
+    if (secp256k1_ecdsa_sign_compact(context, hash.data(), signature.data, secret.data(),
+        secp256k1_nonce_function_rfc6979, nullptr, nullptr) != 1)
         return false;
 
     std::copy_n(std::begin(signature.data), out.size(), out.begin());
@@ -390,19 +401,20 @@ bool verify_signature(const data_slice& point, const hash_digest& hash,
     secp256k1_ecdsa_signature parsed;
     std::copy_n(signature.begin(), ec_signature_size, std::begin(parsed.data));
 
-    // secp256k1_ecdsa_verify rejects non-normalized (low-s) signatures, but
-    // bitcoin does not have such a limitation, so we always normalize.
-    secp256k1_ecdsa_signature normal;
+    // secp256k1-zkp doesn't check `high-s`
+    //// secp256k1_ecdsa_verify rejects non-normalized (low-s) signatures, but
+    //// bitcoin does not have such a limitation, so we always normalize.
+    //secp256k1_ecdsa_signature normal;
     const auto context = verification.context();
-    secp256k1_ecdsa_signature_normalize(context, &normal, &parsed);
+    //secp256k1_ecdsa_signature_normalize(context, &normal, &parsed);
 
     // This uses a data slice and calls secp256k1_ec_pubkey_parse() in place of
     // parse() so that we can support the der_verify data_chunk optimization.
     secp256k1_pubkey pubkey;
     const auto size = point.size();
     return
-        secp256k1_ec_pubkey_parse(context, &pubkey, point.data(), size) == 1 &&
-        secp256k1_ecdsa_verify(context, &normal, hash.data(), &pubkey) == 1;
+        secp256k1_ec_pubkey_parse(context, pubkey.data, sizeof(secp256k1_pubkey), point.data(), size) == 1 &&
+        secp256k1_ecdsa_verify(context, hash.data(), parsed.data, sizeof(secp256k1_ecdsa_signature), pubkey.data, sizeof(secp256k1_pubkey)) == 1;
 }
 
 // Recoverable sign/recover
@@ -416,12 +428,13 @@ bool sign_recoverable(recoverable_signature& out, const ec_secret& secret,
     secp256k1_ecdsa_recoverable_signature signature;
 
     const auto result =
-        secp256k1_ecdsa_sign_recoverable(context, &signature, hash.data(),
-            secret.data(), secp256k1_nonce_function_rfc6979, nullptr) == 1 &&
-        secp256k1_ecdsa_recoverable_signature_serialize_compact(context,
-            out.signature.data(), &recovery_id, &signature) == 1;
+        secp256k1_ecdsa_sign_compact(context, hash.data(), signature.data, secret.data(),
+            secp256k1_nonce_function_rfc6979, nullptr, &recovery_id) != 1 &&
+        secp256k1_ecdsa_signature_serialize_compact(context,
+            out.signature.data(), &recovery_id, signature.data) == 1;
 
-    BITCOIN_ASSERT(recovery_id >= 0 && recovery_id <= 3);
+    // not used in EOSIO
+    //BITCOIN_ASSERT(recovery_id >= 0 && recovery_id <= 3);
     out.recovery_id = safe_to_unsigned<uint8_t>(recovery_id);
     return result;
 }
